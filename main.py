@@ -20,6 +20,7 @@ from auth import (
     verify_password,
     get_password_hash,
 )
+from config import BASE_URL, SERVER_HOST, SERVER_PORT, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
 
 app = FastAPI(title="Task Management API")
 
@@ -134,7 +135,7 @@ async def create_task(
         db.refresh(task_db)
         
         # Add audio URL to response
-        base_url = "http://localhost:8000"
+        base_url = BASE_URL
         if task_db.audio_path:
             filename = os.path.basename(task_db.audio_path)
             task_db.audio_url = f"{base_url}/tasks/audio/{filename}"
@@ -169,7 +170,7 @@ async def get_tasks(
         )
 
         # Add audio URLs to tasks that have audio files
-        base_url = "http://localhost:8000"
+        base_url = BASE_URL
         for task in tasks:
             if task.audio_path:
                 filename = os.path.basename(task.audio_path)
@@ -208,7 +209,7 @@ async def get_task(
     
     # Add audio URL if task has audio file
     if task.audio_path:
-        base_url = "http://localhost:8000"
+        base_url = BASE_URL
         filename = os.path.basename(task.audio_path)
         task.audio_url = f"{base_url}/tasks/audio/{filename}"
     
@@ -324,7 +325,7 @@ async def upload_audio(
         db.refresh(new_task)
 
         # Create the response
-        base_url = "http://localhost:8000"
+        base_url = BASE_URL
         filename = os.path.basename(file_path)
         audio_url = f"{base_url}/tasks/audio/{filename}"
 
@@ -367,5 +368,4 @@ async def get_audio_file(filename: str):
 Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8011, reload=True)
-
+    uvicorn.run("main:app", host=SERVER_HOST, port=SERVER_PORT, reload=True)
