@@ -21,6 +21,7 @@ from auth import (
     get_password_hash,
 )
 from config import BASE_URL, SERVER_HOST, SERVER_PORT, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
+from routers import teams
 
 app = FastAPI(title="Task Management API")
 
@@ -64,6 +65,9 @@ app.add_middleware(
 
 # Mount the audio_files directory to serve static files
 app.mount("/audio", StaticFiles(directory="audio_files"), name="audio")
+
+# Include routers
+app.include_router(teams.router)
 
 # Authentication endpoints
 @app.post("/auth/register", response_model=UserResponse)

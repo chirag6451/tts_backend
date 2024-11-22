@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, constr
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
+from models import TeamRole, InvitationStatus
 
 class TaskBase(BaseModel):
     title: str
@@ -25,10 +26,14 @@ class TaskResponse(BaseModel):
     user_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class UserBase(BaseModel):
-    email: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -36,8 +41,13 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
 
-class UserResponse(UserBase):
+class UserResponse(BaseModel):
     id: int
+    email: Optional[str] = None
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -53,6 +63,65 @@ class AudioUploadResponse(BaseModel):
     success: bool
     message: str
     task: dict
+
+    class Config:
+        from_attributes = True
+
+class TeamBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class TeamCreate(TeamBase):
+    pass
+
+class TeamMemberBase(BaseModel):
+    user_id: int
+    role: constr(pattern='^(owner|member)$') = TeamRole.MEMBER.value
+
+    class Config:
+        from_attributes = True
+
+class TeamMemberCreate(TeamMemberBase):
+    pass
+
+class ContactInvite(BaseModel):
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    country_code: Optional[str] = None
+
+class TeamMemberInvite(BaseModel):
+    contacts: List[ContactInvite]
+
+class TeamMemberResponse(TeamMemberBase):
+    id: int
+    team_id: int
+    invitation_status: constr(pattern='^(pending|accepted|declined)$')
+    invited_by_id: Optional[int]
+    invited_at: datetime
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    user: UserResponse
+
+    class Config:
+        from_attributes = True
+
+class InvitationResponse(BaseModel):
+    members: List[TeamMemberResponse]
+    errors: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True
+
+class TeamResponse(TeamBase):
+    id: int
+    owner_id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    owner: UserResponse
+    members: List[TeamMemberResponse]
 
     class Config:
         from_attributes = True

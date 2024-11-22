@@ -29,7 +29,14 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     
     # Create new user
     hashed_password = get_password_hash(user.password)
-    db_user = User(email=user.email, hashed_password=hashed_password)
+    db_user = User(
+        email=user.email,
+        hashed_password=hashed_password,
+        name=user.name,
+        nickname=user.nickname,
+        country_code=user.country_code,
+        phone_number=user.phone_number
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
