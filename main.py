@@ -9,9 +9,9 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from models import Task, User, Base
+from models import Task, User, Base, TeamMember, Team, InvitationStatus
 from database import SessionLocal, engine, get_db, init_db
-from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse
+from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse, RegistrationResponse, TeamInvitationInfo
 import pydantic
 import uvicorn
 from auth import (
@@ -22,11 +22,14 @@ from auth import (
 )
 from config import BASE_URL, SERVER_HOST, SERVER_PORT, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
 from routers import teams
+import logging
+import aiofiles
 
 app = FastAPI(title="Task Management API")
 
-# Initialize database with new schema
-init_db()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Create a test user if none exists
 def create_test_user():
@@ -70,18 +73,176 @@ app.mount("/audio", StaticFiles(directory="audio_files"), name="audio")
 app.include_router(teams.router)
 
 # Authentication endpoints
-@app.post("/auth/register", response_model=UserResponse)
+@app.post("/auth/register", response_model=RegistrationResponse)
 async def register_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    logger.info(f"Registration attempt for email: {user.email}, phone: {user.phone_number}")
     
-    hashed_password = get_password_hash(user.password)
-    db_user = User(email=user.email, hashed_password=hashed_password)
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+    # Check if user exists by email or phone
+    existing_user = None
+    conflicting_user = None
+    
+    # First check by email
+    if user.email:
+        existing_user = db.query(User).filter(User.email == user.email).first()
+        if existing_user:
+            logger.info(f"Found existing user by email: {existing_user.id}")
+    
+    # Then check by phone
+    if user.phone_number:
+        phone_user = db.query(User).filter(User.phone_number == user.phone_number).first()
+        if phone_user:
+            if existing_user and phone_user.id != existing_user.id:
+                # Different user has this phone number
+                logger.info(f"Found conflicting user with phone number: {phone_user.id}")
+                conflicting_user = phone_user
+            elif not existing_user:
+                existing_user = phone_user
+                logger.info(f"Found existing user by phone: {existing_user.id}")
+
+    if conflicting_user:
+        logger.error("Phone number already registered to a different user")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number already registered to a different user"
+        )
+
+    if existing_user:
+        logger.info(f"Checking team memberships for user: {existing_user.id}")
+        # Check team memberships
+        team_memberships = (
+            db.query(TeamMember)
+            .filter(TeamMember.user_id == existing_user.id)
+            .all()
+        )
+        
+        logger.info(f"Found {len(team_memberships)} team memberships")
+        
+        # Log each membership
+        for member in team_memberships:
+            logger.info(f"Team membership - ID: {member.id}, Status: {member.invitation_status}")
+        
+        # Check for non-pending invitations
+        has_non_pending = any(
+            member.invitation_status != "pending"
+            for member in team_memberships
+        )
+        
+        if not team_memberships:
+            logger.info("No team memberships found - blocking registration")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        if has_non_pending:
+            logger.info("User has non-pending invitations - blocking registration")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        logger.info("All invitations are pending - updating user details")
+        # Update existing user
+        if user.email:
+            existing_user.email = user.email
+        existing_user.hashed_password = get_password_hash(user.password)
+        if user.name:
+            existing_user.name = user.name
+        if user.nickname:
+            existing_user.nickname = user.nickname
+        if user.country_code:
+            existing_user.country_code = user.country_code
+        if user.phone_number:
+            existing_user.phone_number = user.phone_number
+        
+        try:
+            db.commit()
+            db.refresh(existing_user)
+            db_user = existing_user
+            logger.info(f"Updated user details for ID: {db_user.id}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error updating user: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Error updating user details"
+            )
+    else:
+        logger.info("Creating new user")
+        # Check if phone number is already taken
+        if user.phone_number:
+            phone_exists = db.query(User).filter(User.phone_number == user.phone_number).first()
+            if phone_exists:
+                logger.error("Phone number already registered")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already registered"
+                )
+        
+        # Create new user
+        try:
+            hashed_password = get_password_hash(user.password)
+            db_user = User(
+                email=user.email,
+                hashed_password=hashed_password,
+                name=user.name,
+                nickname=user.nickname,
+                country_code=user.country_code,
+                phone_number=user.phone_number
+            )
+            db.add(db_user)
+            db.commit()
+            db.refresh(db_user)
+            logger.info(f"Created new user with ID: {db_user.id}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error creating user: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Error creating user"
+            )
+
+    # Find pending invitations
+    pending_invitations = []
+    invitations_query = (
+        db.query(
+            TeamMember,
+            Team.name.label('team_name'),
+            User.name.label('inviter_name'),
+            User.email.label('inviter_email')
+        )
+        .join(Team, TeamMember.team_id == Team.id)
+        .outerjoin(User, TeamMember.invited_by_id == User.id)
+        .filter(
+            TeamMember.invitation_status == "pending",
+            TeamMember.user_id == db_user.id
+        )
+    )
+    
+    for invite, team_name, inviter_name, inviter_email in invitations_query.all():
+        logger.info(f"Found pending invitation - Team: {team_name}, Inviter: {inviter_email}")
+        pending_invitations.append(TeamInvitationInfo(
+            id=invite.id,
+            team_id=invite.team_id,
+            team_name=team_name,
+            invited_by_name=inviter_name,
+            invited_by_email=inviter_email,
+            invited_at=invite.invited_at
+        ))
+
+    logger.info(f"Total pending invitations found: {len(pending_invitations)}")
+    
+    # Return registration response with pending invitations
+    return {
+        "id": db_user.id,
+        "email": db_user.email,
+        "name": db_user.name,
+        "nickname": db_user.nickname,
+        "country_code": db_user.country_code,
+        "phone_number": db_user.phone_number,
+        "created_at": db_user.created_at,
+        "pending_invitations": pending_invitations
+    }
 
 @app.post("/auth/login", response_model=Token)
 async def login(credentials: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):

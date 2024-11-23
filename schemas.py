@@ -91,6 +91,7 @@ class ContactInvite(BaseModel):
     email: Optional[str] = None
     phone_number: Optional[str] = None
     country_code: Optional[str] = None
+    team_id: Optional[int] = None
 
 class TeamMemberInvite(BaseModel):
     contacts: List[ContactInvite]
@@ -122,6 +123,30 @@ class TeamResponse(TeamBase):
     updated_at: Optional[datetime] = None
     owner: UserResponse
     members: List[TeamMemberResponse]
+
+    class Config:
+        from_attributes = True
+
+class TeamInvitationInfo(BaseModel):
+    id: int
+    team_id: int
+    team_name: str
+    invited_by_name: Optional[str] = None
+    invited_by_email: Optional[str] = None
+    invited_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class RegistrationResponse(BaseModel):
+    id: int
+    email: Optional[str] = None
+    name: Optional[str] = None
+    nickname: Optional[str] = None
+    country_code: Optional[str] = None
+    phone_number: Optional[str] = None
+    created_at: datetime
+    pending_invitations: List[TeamInvitationInfo] = []
 
     class Config:
         from_attributes = True
