@@ -22,5 +22,5 @@ def get_db():
 # Function to initialize database
 def init_db():
     import models  # Import models here to avoid circular imports
-    Base.metadata.drop_all(bind=engine)  # Drop all tables
-    Base.metadata.create_all(bind=engine)  # Create all tables
+    # Only create tables if they don't exist
+    Base.metadata.create_all(bind=engine)
