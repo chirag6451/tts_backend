@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from models import Task, User, Base, TeamMember, Team, InvitationStatus
 from database import SessionLocal, engine, get_db, init_db
-from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse, RegistrationResponse, TeamInvitationInfo, ManualTaskCreate
+from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse, RegistrationResponse, TeamInvitationInfo, ManualTaskCreate, TaskDetailResponse
 import pydantic
 import uvicorn
 from auth import (
@@ -307,13 +307,14 @@ async def get_tasks(
             detail=f"Error retrieving tasks: {str(e)}"
         )
 
-@app.get("/tasks/{task_id}", response_model=TaskResponse)
+@app.get("/tasks/{task_id}", response_model=TaskDetailResponse)
 async def get_task(
     task_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    task = db.query(Task).filter(Task.id == task_id).first()
+    # Join Task with User to get owner information
+    task = db.query(Task).join(User, Task.user_id == User.id).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
@@ -329,6 +330,9 @@ async def get_task(
         base_url = BASE_URL
         filename = os.path.basename(task.audio_path)
         task.audio_url = f"{base_url}/tasks/audio/{filename}"
+    
+    # Get owner information
+    task.owner = db.query(User).filter(User.id == task.user_id).first()
     
     return task
 

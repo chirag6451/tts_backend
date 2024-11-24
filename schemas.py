@@ -66,6 +66,12 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class TaskDetailResponse(TaskResponse):
+    owner: UserResponse
+
+    class Config:
+        from_attributes = True
+
 class Token(BaseModel):
     access_token: str
     token_type: str
