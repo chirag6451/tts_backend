@@ -22,6 +22,7 @@ from auth import (
 )
 from config import BASE_URL, SERVER_HOST, SERVER_PORT, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
 from routers import teams, tasks
+from dashboard_routes import router as dashboard_router
 from constants.task_status import TaskStatus
 import logging
 import aiofiles
@@ -73,6 +74,7 @@ app.mount("/audio", StaticFiles(directory="audio_files"), name="audio")
 # Include routers
 app.include_router(teams.router)
 app.include_router(tasks.router)
+app.include_router(dashboard_router)
 
 # Authentication endpoints
 @app.post("/auth/register", response_model=RegistrationResponse)
