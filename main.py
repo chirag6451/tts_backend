@@ -34,23 +34,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create a test user if none exists
-def create_test_user():
-    db = SessionLocal()
-    try:
-        test_user = db.query(User).filter(User.email == "test@example.com").first()
-        if not test_user:
-            test_user = User(
-                email="test@example.com",
-                hashed_password=get_password_hash("password123")
-            )
-            db.add(test_user)
-            db.commit()
-            db.refresh(test_user)
-    finally:
-        db.close()
+# def create_test_user():
+#     db = SessionLocal()
+#     try:
+#         test_user = db.query(User).filter(User.email == "test@example.com").first()
+#         if not test_user:
+#             test_user = User(
+#                 email="test@example.com",
+#                 hashed_password=get_password_hash("password123")
+#             )
+#             db.add(test_user)
+#             db.commit()
+#             db.refresh(test_user)
+#     finally:
+#         db.close()
 
 # Create test user
-create_test_user()
+# create_test_user()
 
 # CORS middleware configuration
 origins = [
@@ -495,7 +495,7 @@ async def get_audio_file(filename: str):
     return FileResponse(audio_path, media_type="audio/mpeg")
 
 # Create database tables
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=SERVER_HOST, port=SERVER_PORT, reload=True)
