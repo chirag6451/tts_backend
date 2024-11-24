@@ -257,15 +257,37 @@ async def create_manual_task(
 async def get_tasks(
     skip: int = 0,
     limit: int = 100,
+    status: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
-        # Query tasks specifically for the current user
+        # Start with base query
+        query = db.query(Task).filter(Task.user_id == current_user.id)
+
+        # Apply status filter
+        if status:
+            # Special case: 'all' returns all tasks
+            if status.lower() == 'all':
+                pass  # No additional filter needed
+            else:
+                # Validate status if provided
+                if not TaskStatus.has_value(status):
+                    valid_statuses = [status.value for status in TaskStatus]
+                    valid_statuses.append('all')
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid status. Must be one of: {valid_statuses}"
+                    )
+                query = query.filter(Task.status == status)
+        else:
+            # Default filter: only pending and in_progress tasks
+            query = query.filter(Task.status.in_([TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value]))
+
+        # Apply ordering and pagination
         tasks = (
-            db.query(Task)
-            .filter(Task.user_id == current_user.id)  # Filter by current user's ID
-            .order_by(Task.created_at.desc())  # Most recent first
+            query
+            .order_by(Task.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
@@ -277,13 +299,6 @@ async def get_tasks(
             if task.audio_path:
                 filename = os.path.basename(task.audio_path)
                 task.audio_url = f"{base_url}/tasks/audio/{filename}"
-            
-            # Ensure task belongs to current user
-            if task.user_id != current_user.id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Access denied: Task belongs to another user"
-                )
         
         return tasks
     except Exception as e:
