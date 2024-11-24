@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from models import Task, User, Base, TeamMember, Team, InvitationStatus
 from database import SessionLocal, engine, get_db, init_db
-from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse, RegistrationResponse, TeamInvitationInfo
+from schemas import TaskCreate, TaskResponse, UserCreate, UserResponse, Token, AudioUploadResponse, RegistrationResponse, TeamInvitationInfo, ManualTaskCreate
 import pydantic
 import uvicorn
 from auth import (
@@ -21,7 +21,8 @@ from auth import (
     get_password_hash,
 )
 from config import BASE_URL, SERVER_HOST, SERVER_PORT, SECRET_KEY, ACCESS_TOKEN_EXPIRE_MINUTES
-from routers import teams
+from routers import teams, tasks
+from constants.task_status import TaskStatus
 import logging
 import aiofiles
 
@@ -71,178 +72,83 @@ app.mount("/audio", StaticFiles(directory="audio_files"), name="audio")
 
 # Include routers
 app.include_router(teams.router)
+app.include_router(tasks.router)
 
 # Authentication endpoints
 @app.post("/auth/register", response_model=RegistrationResponse)
 async def register_user(user: UserCreate, db: Session = Depends(get_db)):
     logger.info(f"Registration attempt for email: {user.email}, phone: {user.phone_number}")
     
-    # Check if user exists by email or phone
-    existing_user = None
-    conflicting_user = None
-    
-    # First check by email
+    # Check if user exists by email
     if user.email:
         existing_user = db.query(User).filter(User.email == user.email).first()
         if existing_user:
-            logger.info(f"Found existing user by email: {existing_user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
     
-    # Then check by phone
+    # Check if user exists by phone number
     if user.phone_number:
-        phone_user = db.query(User).filter(User.phone_number == user.phone_number).first()
-        if phone_user:
-            if existing_user and phone_user.id != existing_user.id:
-                # Different user has this phone number
-                logger.info(f"Found conflicting user with phone number: {phone_user.id}")
-                conflicting_user = phone_user
-            elif not existing_user:
-                existing_user = phone_user
-                logger.info(f"Found existing user by phone: {existing_user.id}")
-
-    if conflicting_user:
-        logger.error("Phone number already registered to a different user")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Phone number already registered to a different user"
-        )
-
-    if existing_user:
-        logger.info(f"Checking team memberships for user: {existing_user.id}")
-        # Check team memberships
+        existing_phone = db.query(User).filter(User.phone_number == user.phone_number).first()
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already registered"
+            )
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        hashed_password=hashed_password,
+        name=user.name,
+        nickname=user.nickname,
+        country_code=user.country_code,
+        phone_number=user.phone_number
+    )
+    
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    # Check for any pending team invitations
+    pending_invitations = []
+    if user.email or user.phone_number:
         team_memberships = (
             db.query(TeamMember)
-            .filter(TeamMember.user_id == existing_user.id)
+            .filter(
+                TeamMember.user_id == db_user.id,
+                TeamMember.invitation_status == "pending"
+            )
             .all()
         )
         
-        logger.info(f"Found {len(team_memberships)} team memberships")
-        
-        # Log each membership
         for member in team_memberships:
-            logger.info(f"Team membership - ID: {member.id}, Status: {member.invitation_status}")
-        
-        # Check for non-pending invitations
-        has_non_pending = any(
-            member.invitation_status != "pending"
-            for member in team_memberships
-        )
-        
-        if not team_memberships:
-            logger.info("No team memberships found - blocking registration")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        
-        if has_non_pending:
-            logger.info("User has non-pending invitations - blocking registration")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        
-        logger.info("All invitations are pending - updating user details")
-        # Update existing user
-        if user.email:
-            existing_user.email = user.email
-        existing_user.hashed_password = get_password_hash(user.password)
-        if user.name:
-            existing_user.name = user.name
-        if user.nickname:
-            existing_user.nickname = user.nickname
-        if user.country_code:
-            existing_user.country_code = user.country_code
-        if user.phone_number:
-            existing_user.phone_number = user.phone_number
-        
-        try:
-            db.commit()
-            db.refresh(existing_user)
-            db_user = existing_user
-            logger.info(f"Updated user details for ID: {db_user.id}")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Error updating user: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Error updating user details"
-            )
-    else:
-        logger.info("Creating new user")
-        # Check if phone number is already taken
-        if user.phone_number:
-            phone_exists = db.query(User).filter(User.phone_number == user.phone_number).first()
-            if phone_exists:
-                logger.error("Phone number already registered")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Phone number already registered"
+            team = db.query(Team).filter(Team.id == member.team_id).first()
+            inviter = db.query(User).filter(User.id == member.invited_by_id).first()
+            if team:
+                pending_invitations.append(
+                    TeamInvitationInfo(
+                        id=member.id,
+                        team_id=team.id,
+                        team_name=team.name,
+                        invited_by_name=inviter.name if inviter else None,
+                        invited_by_email=inviter.email if inviter else None,
+                        invited_at=member.invited_at
+                    )
                 )
-        
-        # Create new user
-        try:
-            hashed_password = get_password_hash(user.password)
-            db_user = User(
-                email=user.email,
-                hashed_password=hashed_password,
-                name=user.name,
-                nickname=user.nickname,
-                country_code=user.country_code,
-                phone_number=user.phone_number
-            )
-            db.add(db_user)
-            db.commit()
-            db.refresh(db_user)
-            logger.info(f"Created new user with ID: {db_user.id}")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Error creating user: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Error creating user"
-            )
-
-    # Find pending invitations
-    pending_invitations = []
-    invitations_query = (
-        db.query(
-            TeamMember,
-            Team.name.label('team_name'),
-            User.name.label('inviter_name'),
-            User.email.label('inviter_email')
-        )
-        .join(Team, TeamMember.team_id == Team.id)
-        .outerjoin(User, TeamMember.invited_by_id == User.id)
-        .filter(
-            TeamMember.invitation_status == "pending",
-            TeamMember.user_id == db_user.id
-        )
+    
+    return RegistrationResponse(
+        id=db_user.id,
+        email=db_user.email,
+        name=db_user.name,
+        nickname=db_user.nickname,
+        country_code=db_user.country_code,
+        phone_number=db_user.phone_number,
+        created_at=db_user.created_at,
+        pending_invitations=pending_invitations
     )
-    
-    for invite, team_name, inviter_name, inviter_email in invitations_query.all():
-        logger.info(f"Found pending invitation - Team: {team_name}, Inviter: {inviter_email}")
-        pending_invitations.append(TeamInvitationInfo(
-            id=invite.id,
-            team_id=invite.team_id,
-            team_name=team_name,
-            invited_by_name=inviter_name,
-            invited_by_email=inviter_email,
-            invited_at=invite.invited_at
-        ))
-
-    logger.info(f"Total pending invitations found: {len(pending_invitations)}")
-    
-    # Return registration response with pending invitations
-    return {
-        "id": db_user.id,
-        "email": db_user.email,
-        "name": db_user.name,
-        "nickname": db_user.nickname,
-        "country_code": db_user.country_code,
-        "phone_number": db_user.phone_number,
-        "created_at": db_user.created_at,
-        "pending_invitations": pending_invitations
-    }
 
 @app.post("/auth/login", response_model=Token)
 async def login(credentials: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -266,6 +172,7 @@ async def login(credentials: OAuth2PasswordRequestForm = Depends(), db: Session 
 async def create_task(
     title: str = Form(...),
     description: str = Form(...),
+    due_date: Optional[datetime] = Form(None),
     audio_file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -292,7 +199,8 @@ async def create_task(
             description=description,
             audio_path=file_path,
             user_id=current_user.id,  # Explicitly set the user ID
-            status="pending"  # Set default status
+            status="pending",  # Set default status
+            due_date=due_date  # Add due_date
         )
         
         db.add(task_db)
@@ -315,6 +223,35 @@ async def create_task(
             status_code=500,
             detail=f"Error creating task: {str(e)}"
         )
+
+@app.post("/tasks/manual", response_model=TaskResponse)
+async def create_manual_task(
+    task: ManualTaskCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Check if the assigned user exists
+    assigned_user = db.query(User).filter(User.id == task.assigned_user_id).first()
+    if not assigned_user:
+        raise HTTPException(
+            status_code=404,
+            detail=f"User with id {task.assigned_user_id} not found"
+        )
+    
+    # Create the task
+    task_db = Task(
+        title=task.title,
+        description=task.description,
+        status=task.status,
+        due_date=task.due_date,
+        user_id=task.assigned_user_id,  # Assign to the specified user
+    )
+    
+    db.add(task_db)
+    db.commit()
+    db.refresh(task_db)
+    
+    return task_db
 
 @app.get("/tasks", response_model=List[TaskResponse])
 async def get_tasks(
@@ -383,8 +320,9 @@ async def get_task(
 @app.put("/tasks/{task_id}", response_model=TaskResponse)
 async def update_task(
     task_id: int,
-    title: str = None,
-    description: str = None,
+    title: str = Form(None),
+    description: str = Form(None),
+    due_date: Optional[datetime] = Form(None),
     audio_file: UploadFile = File(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -392,12 +330,14 @@ async def update_task(
     task = db.query(Task).filter(Task.id == task_id, Task.user_id == current_user.id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
-    if title:
+
+    if title is not None:
         task.title = title
-    if description:
+    if description is not None:
         task.description = description
-    
+    if due_date is not None:
+        task.due_date = due_date
+
     if audio_file:
         # Delete old audio file if exists
         if task.audio_path and os.path.exists(task.audio_path):
@@ -429,8 +369,12 @@ async def update_task_status(
     
     # Validate status
     status = status.lower()
-    if status not in ["pending", "completed"]:
-        raise HTTPException(status_code=400, detail="Invalid status. Must be 'pending' or 'completed'")
+    if not TaskStatus.has_value(status):
+        valid_statuses = [status.value for status in TaskStatus]
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid status. Must be one of: {valid_statuses}"
+        )
     
     # Update the task status
     task.status = status

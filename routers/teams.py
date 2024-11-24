@@ -111,11 +111,15 @@ def invite_team_members(
         try:
             # Determine which team to use
             team = None
-            if contact.team_id:
-                team = db.query(Team).filter(Team.id == contact.team_id).first()
-                if not team:
-                    errors.append(f"Team with id {contact.team_id} not found")
-                    continue
+            if contact.team_id is not None:  
+                # For team_id 0, use default team
+                if contact.team_id == 0:
+                    team = default_team
+                else:
+                    team = db.query(Team).filter(Team.id == contact.team_id).first()
+                    if not team:
+                        errors.append(f"Team with id {contact.team_id} not found")
+                        continue
                 
                 # Verify current user is team owner or member
                 team_member = (
@@ -133,103 +137,89 @@ def invite_team_members(
             else:
                 team = default_team
 
-            # Find or create user placeholder
+            # Find or create user
             user = None
             identifier = None
 
+            # Check for existing user by email or phone number
             if contact.email and contact.email.strip():
                 user = db.query(User).filter(User.email == contact.email.strip()).first()
                 identifier = contact.email
-            elif contact.phone_number and contact.phone_number.strip():
+            if not user and contact.phone_number and contact.phone_number.strip():
                 user = db.query(User).filter(User.phone_number == contact.phone_number.strip()).first()
-                identifier = contact.phone_number
-            else:
+                identifier = identifier or contact.phone_number
+            
+            if not identifier:
                 errors.append("Either email or phone number must be provided")
                 continue
 
             if user:
-                # Check if user is already part of the team
-                existing_member = (
+                # Check for any existing team membership (accepted or pending)
+                existing_membership = (
                     db.query(TeamMember)
                     .filter(
                         TeamMember.team_id == team.id,
-                        TeamMember.user_id == user.id,
-                        TeamMember.invitation_status == InvitationStatus.ACCEPTED.value
+                        TeamMember.user_id == user.id
                     )
                     .first()
                 )
                 
-                if existing_member:
-                    errors.append(f"Cannot invite {identifier} as they are already a member of this team")
+                if existing_membership:
+                    if existing_membership.invitation_status == InvitationStatus.ACCEPTED.value:
+                        errors.append(f"User {identifier} is already a member of this team")
+                    else:
+                        errors.append(f"User {identifier} already has a pending invitation to this team")
                     continue
 
-                # Check for pending invitation only for this specific team
-                pending_invite = (
-                    db.query(TeamMember)
-                    .filter(
-                        TeamMember.team_id == team.id,
-                        TeamMember.user_id == user.id,
-                        TeamMember.invitation_status == InvitationStatus.PENDING.value
-                    )
-                    .first()
-                )
-                
-                if pending_invite:
-                    errors.append(f"Cannot invite {identifier} as they already have a pending invitation to this team")
-                    continue
             else:
-                # Create placeholder user
-                try:
-                    # Check if phone number is already in use
-                    if contact.phone_number and contact.phone_number.strip():
-                        existing_user_with_phone = db.query(User).filter(User.phone_number == contact.phone_number.strip()).first()
-                        if existing_user_with_phone:
-                            errors.append(f"Phone number {contact.phone_number} is already registered with another user")
-                            continue
+                # Check if another user exists with the same phone number
+                if contact.phone_number and contact.phone_number.strip():
+                    existing_phone_user = db.query(User).filter(User.phone_number == contact.phone_number.strip()).first()
+                    if existing_phone_user:
+                        errors.append(f"A user with phone number {contact.phone_number} already exists")
+                        continue
 
-                    user = User(
-                        email=contact.email.strip() if contact.email and contact.email.strip() else None,
-                        phone_number=contact.phone_number.strip() if contact.phone_number and contact.phone_number.strip() else None,
-                        country_code=contact.country_code.strip() if contact.country_code and contact.country_code.strip() else None,
-                        hashed_password="temporary"  # Will be set when user accepts invitation
-                    )
-                    db.add(user)
-                    db.commit()
-                    db.refresh(user)
-                except Exception as e:
-                    errors.append(f"Failed to create user for {identifier}: {str(e)}")
-                    db.rollback()
-                    continue
-            
-            # Create new team member invitation
-            db_team_member = TeamMember(
+                # Create new user
+                user = User(
+                    email=contact.email.strip() if contact.email and contact.email.strip() else None,
+                    phone_number=contact.phone_number.strip() if contact.phone_number and contact.phone_number.strip() else None,
+                    country_code=contact.country_code.strip() if contact.country_code and contact.country_code.strip() else None,
+                    hashed_password="temporary"  # Will be set when user accepts invitation
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+
+            # Create team member invitation
+            team_member = TeamMember(
                 team_id=team.id,
                 user_id=user.id,
                 role=TeamRole.MEMBER.value,
                 invitation_status=InvitationStatus.PENDING.value,
                 invited_by_id=current_user.id
             )
-            db.add(db_team_member)
+            db.add(team_member)
             db.commit()
-            db.refresh(db_team_member)
+            db.refresh(team_member)
             
-            invited_members.append(db_team_member)
+            # Add to invited members list
+            invited_members.append(team_member)
 
         except Exception as e:
-            errors.append(f"Failed to process invitation for {identifier}: {str(e)}")
+            errors.append(f"Error inviting {identifier if identifier else 'user'}: {str(e)}")
             db.rollback()
             continue
-    
+
     if not invited_members and errors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": "Failed to invite any members", "errors": errors}
+            detail={
+                "message": "Failed to invite any members",
+                "errors": errors
+            }
         )
-    
-    return {
-        "members": invited_members,
-        "errors": errors if errors else None
-    }
+
+    return InvitationResponse(members=invited_members, errors=errors)
 
 @router.post("/{team_id}/invitations/{invitation_id}/respond", response_model=TeamMemberResponse)
 def respond_to_invitation(

@@ -7,12 +7,23 @@ class TaskBase(BaseModel):
     title: str
     description: Optional[str] = None
     audio_path: Optional[str] = None
+    due_date: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
 class TaskCreate(TaskBase):
     pass
+
+class ManualTaskCreate(BaseModel):
+    title: str
+    assigned_user_id: int
+    description: Optional[str] = None
+    due_date: Optional[datetime] = None
+    status: Optional[str] = "pending"
+
+    class Config:
+        from_attributes = True
 
 class TaskResponse(BaseModel):
     id: int
@@ -21,6 +32,7 @@ class TaskResponse(BaseModel):
     status: str
     audio_path: Optional[str] = None
     audio_url: Optional[str] = None
+    due_date: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
     user_id: int

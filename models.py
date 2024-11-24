@@ -4,6 +4,7 @@ from sqlalchemy.sql import func
 from database import Base
 from datetime import datetime
 import enum
+from constants.task_status import TaskStatus
 
 class TeamRole(enum.Enum):
     OWNER = "owner"
@@ -38,8 +39,9 @@ class Task(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String)
     description = Column(String)
-    status = Column(String, default="pending")
+    status = Column(String, default=TaskStatus.PENDING.value)
     audio_path = Column(String, nullable=True)
+    due_date = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"))
